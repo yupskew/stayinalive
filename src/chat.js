@@ -2,6 +2,9 @@ import { log, chat as chatLog } from './logger.js';
 import { askGroq } from './ai.js';
 import cfg from './config.js';
 
+let lastAiCall = 0;
+let aiCooldown = false;
+
 export function setupChat(bot) {
   if (!bot) return;
 
@@ -16,10 +19,19 @@ export function setupChat(bot) {
       return;
     }
 
-    if (lower.includes(bot.username.toLowerCase())) {
-      handleAIReply(bot, username, message);
-      return;
-    }
+    if (!cfg.groqKey) return;
+
+    const now = Date.now();
+    if (aiCooldown || now - lastAiCall < 3000) return;
+
+    const mentioned = lower.includes(bot.username.toLowerCase());
+    const prob = mentioned ? 0.9 : 0.15;
+    if (Math.random() > prob) return;
+
+    aiCooldown = true;
+    lastAiCall = now;
+
+    handleAIReply(bot, username, message);
   });
 }
 
@@ -30,39 +42,24 @@ function handleCommand(bot, username, args) {
 
   switch (cmd) {
     case 'follow':
-      if (!target) {
-        bot.chat(`Who should I follow?`);
-        return;
-      }
-      emitCommand('follow', { name: target, sender: username });
+      if (!target) { bot.chat('Who?'); return; }
+      emitCommand('follow', { name: target });
       break;
-
     case 'kill':
-      if (!target) {
-        bot.chat(`Kill what? Give me a name`);
-        return;
-      }
-      emitCommand('kill', { name: target, sender: username });
+      if (!target) { bot.chat('Kill who?'); return; }
+      emitCommand('kill', { name: target });
       break;
-
     case 'come':
     case 'comehere':
-      emitCommand('come', { name: target || username, sender: username });
+      emitCommand('come', { name: target || username });
       break;
-
     case 'stop':
     case 'stay':
-      bot.chat(`Alright`);
       emitCommand('stop');
       break;
-
     case 'mobs':
-      bot.chat(`Clearing mobs!`);
       emitCommand('mobs');
       break;
-
-    default:
-      handleAIReply(bot, username, args);
   }
 }
 
@@ -71,16 +68,70 @@ function emitCommand(type, data) {
 }
 
 async function handleAIReply(bot, username, message) {
-  if (!cfg.groqKey) return;
+  const ctx = buildContext(bot);
+  const reply = await askGroq(username, message, ctx);
+  aiCooldown = false;
 
-  const reply = await askGroq(username, message);
-  if (reply) {
-    setTimeout(() => {
-      bot.chat(reply);
-    }, randomBetween(1500, 5000));
+  if (!reply) return;
+
+  const action = reply.match(/\[action:(\w+)(?:\s+(.+?))?\]/);
+  let chatMsg = reply.replace(/\[action:.*?\]/g, '').trim();
+
+  if (action) {
+    const cmd = action[1];
+    const arg = action[2]?.trim();
+
+    switch (cmd) {
+      case 'follow':
+        emitCommand('follow', { name: arg || username });
+        if (!chatMsg) chatMsg = `Following ${arg || username}!`;
+        break;
+      case 'come':
+        emitCommand('come', { name: arg || username });
+        if (!chatMsg) chatMsg = 'Coming!';
+        break;
+      case 'stop':
+        emitCommand('stop');
+        if (!chatMsg) chatMsg = 'Okay';
+        break;
+      case 'mobs':
+        emitCommand('mobs');
+        if (!chatMsg) chatMsg = 'Time to fight!';
+        break;
+      case 'jump':
+        if (bot.entity) {
+          bot.setControlState('jump', true);
+          setTimeout(() => bot.setControlState('jump', false), 200);
+        }
+        break;
+      case 'look':
+        if (arg) {
+          const target = bot.players[arg];
+          if (target?.entity) {
+            bot.lookAt(target.entity.position.offset(0, 1, 0));
+          }
+        }
+        break;
+    }
+  }
+
+  if (chatMsg) {
+    const delay = 1000 + Math.random() * 3000;
+    setTimeout(() => bot.chat(chatMsg), delay);
   }
 }
 
-function randomBetween(min, max) {
-  return Math.random() * (max - min) + min;
+function buildContext(bot) {
+  if (!bot?.entity) return {};
+  const e = bot.entity;
+  const nearby = Object.values(bot.players)
+    .filter(p => p.entity && p.username !== bot.username)
+    .map(p => p.username);
+  return {
+    health: Math.round(bot.health),
+    food: Math.round(bot.food),
+    pos: `${Math.round(e.position.x)}, ${Math.round(e.position.y)}, ${Math.round(e.position.z)}`,
+    nearby: nearby.length ? nearby.join(', ') : 'none',
+    allPlayers: Object.keys(bot.players).filter(n => n !== bot.username).join(', ') || 'none',
+  };
 }
