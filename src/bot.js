@@ -16,6 +16,8 @@ export class BotManager {
     this.startTime = null;
     this._followTarget = null;
     this._followInterval = null;
+    this._watchdog = null;
+    this._memoryLog = null;
   }
 
   get uptime() {
@@ -26,6 +28,7 @@ export class BotManager {
     if (this.bot) {
       this.bot.removeAllListeners();
       this.stopMovement();
+      this.clearIntervals();
       try { this.bot.end(); } catch {}
       this.bot = null;
     }
@@ -39,6 +42,7 @@ export class BotManager {
       viewDistance: 'far',
       hideErrors: true,
       logErrors: false,
+      checkTimeoutInterval: 60000,
     };
 
     if (cfg.auth === 'microsoft') {
@@ -57,20 +61,19 @@ export class BotManager {
       this.startTime = Date.now();
       this.reconnector.reset();
       log('success', `Logged in as ${this.bot.username} | Server: ${this.bot.game.serverBrand || this.bot.game.server || 'unknown'}`);
+      this.startWatchdog();
       sendWebhook(`Bot **${this.bot.username}** connected to **${cfg.host}**`);
     });
 
     this.bot.on('spawn', () => {
       log('success', `Spawned at ${Math.round(this.bot.entity.position.x)}, ${Math.round(this.bot.entity.position.y)}, ${Math.round(this.bot.entity.position.z)}`);
-
       this.antiIdle = new AntiIdle(this.bot);
       this.antiIdle.start();
-
       setupChat(this.bot);
     });
 
     this.bot.on('health', () => {
-      if (this.bot.food < 18 && this.bot.health < 20) {
+      if (this.bot.food < 18 || this.bot.health < 20) {
         this.autoEat();
       }
       if (this.bot.health <= 0) {
@@ -100,6 +103,7 @@ export class BotManager {
       const clean = typeof reason === 'string' ? reason : JSON.stringify(reason);
       log('error', `Kicked: ${clean}`);
       sendWebhook(`Bot **${cfg.username}** was kicked from **${cfg.host}**: ${clean}`);
+      this.clearIntervals();
       this.scheduleReconnect();
     });
 
@@ -110,11 +114,38 @@ export class BotManager {
     this.bot.on('end', (reason) => {
       log('warn', `Disconnected: ${reason || 'connection ended'}`);
       if (this.antiIdle) this.antiIdle.stop();
+      this.clearIntervals();
       if (this.startTime) {
         sendWebhook(`Bot **${cfg.username}** disconnected from **${cfg.host}** after ${formatDuration(Date.now() - this.startTime)}`);
       }
       this.scheduleReconnect();
     });
+  }
+
+  startWatchdog() {
+    this.clearIntervals();
+
+    this._watchdog = setInterval(() => {
+      if (this.bot?.entity) {
+        this.bot.player.ping;
+      }
+    }, 30000);
+
+    this._memoryLog = setInterval(() => {
+      const usage = process.memoryUsage();
+      const rss = (usage.rss / 1024 / 1024).toFixed(1);
+      const heap = (usage.heapUsed / 1024 / 1024).toFixed(1);
+      log('system', `Memory: ${rss}MB RSS, ${heap}MB heap | Uptime: ${formatDuration(this.uptime)}`);
+
+      if (usage.heapUsed > 200 * 1024 * 1024) {
+        global.gc?.();
+      }
+    }, 600000);
+  }
+
+  clearIntervals() {
+    if (this._watchdog) { clearInterval(this._watchdog); this._watchdog = null; }
+    if (this._memoryLog) { clearInterval(this._memoryLog); this._memoryLog = null; }
   }
 
   scheduleReconnect() {
@@ -130,6 +161,7 @@ export class BotManager {
     this.reconnector.cancel();
     if (this.antiIdle) this.antiIdle.stop();
     this.stopMovement();
+    this.clearIntervals();
     if (this.bot) {
       try { this.bot.end(); } catch {}
       this.bot = null;
@@ -177,10 +209,9 @@ export class BotManager {
       if (food) {
         await this.bot.equip(food, 'hand');
         await this.bot.consume();
+        log('action', 'Auto-ate food');
       }
-    } catch {
-      // ignore eat failures
-    }
+    } catch {}
   }
 }
 

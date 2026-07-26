@@ -10,6 +10,10 @@ process.on('unhandledRejection', (err) => {
   log('error', `Unhandled rejection: ${err.message}`);
 });
 
+setInterval(() => {
+  global.gc?.();
+}, 300000);
+
 const manager = new BotManager();
 manager.connect();
 
