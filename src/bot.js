@@ -161,12 +161,12 @@ export class BotManager {
     this._followTarget = entity;
 
     this._followInterval = setInterval(() => {
-      if (!this.bot?.entity || !this._followTarget?.entity) {
+      if (!this.bot?.entity || !this._followTarget) {
         this.stopMovement();
         return;
       }
       try {
-        const pos = this._followTarget.entity.position;
+        const pos = this._followTarget.position;
         this.bot.pathfinder.setMovements(new Movements(this.bot));
         this.bot.pathfinder.goto(pos);
       } catch {}
@@ -178,13 +178,13 @@ export class BotManager {
     this._killTarget = entity;
 
     this._killInterval = setInterval(async () => {
-      if (!this.bot?.entity || !this._killTarget?.entity) {
+      if (!this.bot?.entity || !this._killTarget) {
         this.stopCombat();
         return;
       }
       try {
         await this.equipBestWeapon();
-        const pos = this._killTarget.entity.position;
+        const pos = this._killTarget.position;
         this.bot.pathfinder.setMovements(new Movements(this.bot));
         await this.bot.pathfinder.goto(pos);
         this.bot.attack(this._killTarget.entity);
@@ -202,7 +202,7 @@ export class BotManager {
         this._killTarget = mob;
         try {
           await this.equipBestWeapon();
-          const pos = mob.position;
+          const pos = this._killTarget.position;
           this.bot.pathfinder.setMovements(new Movements(this.bot));
           await this.bot.pathfinder.goto(pos);
           this.bot.attack(mob);
