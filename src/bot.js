@@ -1,11 +1,17 @@
 import { createBot } from 'mineflayer';
-import { pathfinder } from 'mineflayer-pathfinder';
-import { Movements } from 'mineflayer-pathfinder';
+import { pathfinder, Movements } from 'mineflayer-pathfinder';
 import cfg from './config.js';
 import { log } from './logger.js';
 import { ReconnectManager } from './reconnect.js';
 import { AntiIdle } from './antiIdle.js';
 import { setupChat } from './chat.js';
+
+const HOSTILE_MOBS = [
+  'zombie', 'skeleton', 'spider', 'creeper', 'enderman', 'witch',
+  'blaze', 'ghast', 'hoglin', 'piglin_brute', 'phantom', 'drowned',
+  'husk', 'stray', 'cave_spider', 'silverfish', 'endermite', 'shulker',
+  'evoker', 'vindicator', 'pillager', 'ravager', 'vex', 'warden',
+];
 
 export class BotManager {
   constructor() {
@@ -16,8 +22,12 @@ export class BotManager {
     this.startTime = null;
     this._followTarget = null;
     this._followInterval = null;
+    this._killTarget = null;
+    this._killInterval = null;
     this._watchdog = null;
     this._memoryLog = null;
+
+    process.on('botCmd', ({ type, data }) => this.handleCmd(type, data));
   }
 
   get uptime() {
@@ -54,7 +64,6 @@ export class BotManager {
     log('info', `Connecting to ${cfg.host}:${cfg.port} as ${cfg.username} [${cfg.auth}]`);
 
     this.bot = createBot(options);
-
     this.bot.loadPlugin(pathfinder);
 
     this.bot.on('login', () => {
@@ -77,12 +86,13 @@ export class BotManager {
         this.autoEat();
       }
       if (this.bot.health <= 0) {
-        log('warn', 'Bot died, auto-respawning...');
+        log('warn', 'Bot died');
       }
     });
 
     this.bot.on('death', () => {
       log('warn', 'Bot died');
+      this.stopCombat();
       if (this.antiIdle) this.antiIdle.stop();
     });
 
@@ -103,6 +113,7 @@ export class BotManager {
       const clean = typeof reason === 'string' ? reason : JSON.stringify(reason);
       log('error', `Kicked: ${clean}`);
       sendWebhook(`Bot **${cfg.username}** was kicked from **${cfg.host}**: ${clean}`);
+      this.stopCombat();
       this.clearIntervals();
       this.scheduleReconnect();
     });
@@ -113,6 +124,7 @@ export class BotManager {
 
     this.bot.on('end', (reason) => {
       log('warn', `Disconnected: ${reason || 'connection ended'}`);
+      this.stopCombat();
       if (this.antiIdle) this.antiIdle.stop();
       this.clearIntervals();
       if (this.startTime) {
@@ -120,6 +132,113 @@ export class BotManager {
       }
       this.scheduleReconnect();
     });
+  }
+
+  handleCmd(type, data) {
+    switch (type) {
+      case 'follow':
+        if (this.antiIdle) this.antiIdle.stop();
+        this.startFollow(data);
+        break;
+      case 'kill':
+        if (this.antiIdle) this.antiIdle.stop();
+        this.startAttack(data);
+        break;
+      case 'mobs':
+        if (this.antiIdle) this.antiIdle.stop();
+        this.startMobKilling();
+        break;
+      case 'stop':
+        this.stopCombat();
+        this.stopMovement();
+        if (this.antiIdle) this.antiIdle.start();
+        break;
+    }
+  }
+
+  startFollow(entity) {
+    this.stopCombat();
+    this._followTarget = entity;
+
+    this._followInterval = setInterval(() => {
+      if (!this.bot?.entity || !this._followTarget?.entity) {
+        this.stopMovement();
+        return;
+      }
+      try {
+        const pos = this._followTarget.entity.position;
+        this.bot.pathfinder.setMovements(new Movements(this.bot));
+        this.bot.pathfinder.goto(pos);
+      } catch {}
+    }, 2000);
+  }
+
+  startAttack(entity) {
+    this.stopMovement();
+    this._killTarget = entity;
+
+    this._killInterval = setInterval(async () => {
+      if (!this.bot?.entity || !this._killTarget?.entity) {
+        this.stopCombat();
+        return;
+      }
+      try {
+        await this.equipBestWeapon();
+        const pos = this._killTarget.entity.position;
+        this.bot.pathfinder.setMovements(new Movements(this.bot));
+        await this.bot.pathfinder.goto(pos);
+        this.bot.attack(this._killTarget.entity);
+      } catch {}
+    }, 1500);
+  }
+
+  startMobKilling() {
+    this.stopMovement();
+
+    this._killInterval = setInterval(async () => {
+      if (!this.bot?.entity) return;
+      const mob = this.findNearestMob(8);
+      if (mob) {
+        this._killTarget = mob;
+        try {
+          await this.equipBestWeapon();
+          const pos = mob.position;
+          this.bot.pathfinder.setMovements(new Movements(this.bot));
+          await this.bot.pathfinder.goto(pos);
+          this.bot.attack(mob);
+        } catch {}
+      }
+    }, 2000);
+  }
+
+  findNearestMob(range) {
+    if (!this.bot?.entity) return null;
+    return this.bot.nearestEntity(e =>
+      e.type === 'mob' && HOSTILE_MOBS.includes(e.name) &&
+      this.bot.entity.position.distanceTo(e.position) <= range
+    );
+  }
+
+  async equipBestWeapon() {
+    if (!this.bot?.inventory) return;
+    try {
+      const swords = this.bot.inventory.items().filter(i =>
+        i.name.includes('sword') || i.name.includes('axe')
+      );
+      if (swords.length) {
+        const best = swords.sort((a, b) => (b.attackDamage || 0) - (a.attackDamage || 0))[0];
+        await this.bot.equip(best, 'hand');
+      }
+    } catch {}
+  }
+
+  stopCombat() {
+    this._killTarget = null;
+    if (this._killInterval) {
+      clearInterval(this._killInterval);
+      this._killInterval = null;
+    }
+    this.stopMovement();
   }
 
   startWatchdog() {
@@ -159,8 +278,8 @@ export class BotManager {
   disconnect() {
     this._manualDisconnect = true;
     this.reconnector.cancel();
+    this.stopCombat();
     if (this.antiIdle) this.antiIdle.stop();
-    this.stopMovement();
     this.clearIntervals();
     if (this.bot) {
       try { this.bot.end(); } catch {}
@@ -172,20 +291,6 @@ export class BotManager {
   reconnect() {
     this.reconnector.cancel();
     this.connect();
-  }
-
-  startFollow(player) {
-    this._followTarget = player;
-    this.stopMovement();
-
-    this._followInterval = setInterval(() => {
-      if (!this.bot?.entity || !this._followTarget?.entity) return;
-      try {
-        const pos = this._followTarget.entity.position;
-        this.bot.pathfinder.setMovements(new Movements(this.bot));
-        this.bot.pathfinder.goto(pos);
-      } catch {}
-    }, 3000);
   }
 
   stopMovement() {
