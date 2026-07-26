@@ -1,4 +1,5 @@
 import { log, chat as chatLog } from './logger.js';
+import cfg from './config.js';
 
 const GREETINGS = ['Hello!', 'Hey there!', 'Hi!', 'Hey!', 'Yo!'];
 
@@ -33,6 +34,7 @@ export function setupChat(bot) {
   bot.on('chat', (username, message) => {
     if (username === bot.username) return;
     chatLog(username, message);
+    sendDiscord(username, message);
 
     const lower = message.toLowerCase().trim();
 
@@ -64,4 +66,14 @@ export function setupChat(bot) {
 
 function randomBetween(min, max) {
   return Math.random() * (max - min) + min;
+}
+
+function sendDiscord(username, message) {
+  const url = cfg.discordWebhook;
+  if (!url) return;
+  fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content: `**${username}**: ${message}` }),
+  }).catch(() => {});
 }
