@@ -34,13 +34,7 @@ function handleCommand(bot, username, args) {
         bot.chat(`Who should I follow?`);
         return;
       }
-      const followTarget = bot.players[target];
-      if (followTarget?.entity) {
-        bot.chat(`Following ${target}`);
-        emitCommand('follow', followTarget.entity);
-      } else {
-        bot.chat(`Can't see ${target} right now`);
-      }
+      emitCommand('follow', { name: target, sender: username });
       break;
 
     case 'kill':
@@ -48,41 +42,22 @@ function handleCommand(bot, username, args) {
         bot.chat(`Kill what? Give me a name`);
         return;
       }
-      const killTarget = bot.players[target];
-      if (killTarget?.entity) {
-        bot.chat(`Going after ${target}!`);
-        emitCommand('kill', killTarget.entity);
-      } else {
-        bot.chat(`Can't find ${target}`);
-      }
+      emitCommand('kill', { name: target, sender: username });
       break;
 
     case 'come':
     case 'comehere':
-      {
-        const who = target || username;
-        const sender = bot.players[who];
-        if (sender?.entity) {
-          bot.chat(`Coming to ${who}!`);
-          emitCommand('follow', sender.entity);
-        } else {
-          bot.chat(`I can't see ${who}, come closer`);
-        }
-      }
+      emitCommand('come', { name: target || username, sender: username });
       break;
 
     case 'stop':
-      bot.chat(`Alright, stopping`);
-      emitCommand('stop');
-      break;
-
     case 'stay':
-      bot.chat(`Okay I'll stay here`);
+      bot.chat(`Alright`);
       emitCommand('stop');
       break;
 
     case 'mobs':
-      bot.chat(`Time to clear some mobs!`);
+      bot.chat(`Clearing mobs!`);
       emitCommand('mobs');
       break;
 

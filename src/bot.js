@@ -27,6 +27,8 @@ export class BotManager {
     this._killInterval = null;
     this._watchdog = null;
     this._memoryLog = null;
+    this._playerPositions = {};
+    this._msgCooldowns = {};
 
     process.on('botCmd', ({ type, data }) => this.handleCmd(type, data));
   }
@@ -108,6 +110,13 @@ export class BotManager {
 
     this.bot.on('playerLeft', (player) => {
       log('chat', `${player.username} left the game`);
+      delete this._playerPositions[player.username];
+    });
+
+    this.bot.on('entityMoved', (entity) => {
+      if (entity.type === 'player' && entity.username) {
+        this._playerPositions[entity.username] = { x: entity.position.x, y: entity.position.y, z: entity.position.z };
+      }
     });
 
     this.bot.on('kicked', (reason) => {
@@ -137,14 +146,41 @@ export class BotManager {
 
   handleCmd(type, data) {
     switch (type) {
-      case 'follow':
+      case 'follow': {
         if (this.antiIdle) this.antiIdle.stop();
-        this.startFollow(data);
+        const target = this.resolvePlayer(data.name, data.sender);
+        if (!target) {
+          if (!this.cooldownMsg(data.name)) this.bot?.chat(`Don't know where ${data.name} is`);
+          return;
+        }
+        this.bot?.chat(`Following ${data.name}`);
+        if (target.entity) this.startFollow(target.entity);
+        else this.startFollowPos(target.pos);
         break;
-      case 'kill':
+      }
+      case 'come': {
         if (this.antiIdle) this.antiIdle.stop();
-        this.startAttack(data);
+        const target = this.resolvePlayer(data.name, data.sender);
+        if (!target) {
+          if (!this.cooldownMsg(data.name)) this.bot?.chat(`Don't know where ${data.name} is`);
+          return;
+        }
+        this.bot?.chat(`Coming to ${data.name}!`);
+        if (target.entity) this.startFollow(target.entity);
+        else this.startFollowPos(target.pos);
         break;
+      }
+      case 'kill': {
+        if (this.antiIdle) this.antiIdle.stop();
+        const target = this.resolvePlayer(data.name, data.sender);
+        if (!target || !target.entity) {
+          if (!this.cooldownMsg(data.name)) this.bot?.chat(`Can't see ${data.name}, they're too far`);
+          return;
+        }
+        this.bot?.chat(`Going after ${data.name}!`);
+        this.startAttack(target.entity);
+        break;
+      }
       case 'mobs':
         if (this.antiIdle) this.antiIdle.stop();
         this.startMobKilling();
@@ -155,6 +191,31 @@ export class BotManager {
         if (this.antiIdle) this.antiIdle.start();
         break;
     }
+  }
+
+  resolvePlayer(name, sender) {
+    const player = this.bot?.players[name];
+    if (player?.entity) {
+      this._playerPositions[name] = {
+        x: player.entity.position.x,
+        y: player.entity.position.y,
+        z: player.entity.position.z,
+        time: Date.now(),
+      };
+      return { entity: player.entity };
+    }
+    if (player) {
+      const cached = this._playerPositions[name];
+      if (cached) return { entity: null, pos: cached };
+    }
+    return null;
+  }
+
+  cooldownMsg(key) {
+    const now = Date.now();
+    if (this._msgCooldowns[key] && now - this._msgCooldowns[key] < 8000) return true;
+    this._msgCooldowns[key] = now;
+    return false;
   }
 
   startFollow(entity) {
@@ -170,6 +231,11 @@ export class BotManager {
     }, 2000);
 
     this.pathfindTo(this._followTarget.position, 2);
+  }
+
+  startFollowPos(pos) {
+    this.stopCombat();
+    this.pathfindTo(pos, 2);
   }
 
   startAttack(entity) {
