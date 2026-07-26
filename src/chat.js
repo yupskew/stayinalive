@@ -58,10 +58,16 @@ function handleCommand(bot, username, args) {
       break;
 
     case 'come':
-      const sender = bot.players[username];
-      if (sender?.entity) {
-        bot.chat(`Coming to you!`);
-        emitCommand('follow', sender.entity);
+    case 'comehere':
+      {
+        const who = target || username;
+        const sender = bot.players[who];
+        if (sender?.entity) {
+          bot.chat(`Coming to ${who}!`);
+          emitCommand('follow', sender.entity);
+        } else {
+          bot.chat(`I can't see ${who}, come closer`);
+        }
       }
       break;
 

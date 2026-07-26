@@ -161,43 +161,46 @@ export class BotManager {
     this.stopCombat();
     this._followTarget = entity;
 
-    const move = new Movements(this.bot);
-    this.bot.pathfinder.setMovements(move);
-
     this._followInterval = setInterval(() => {
       if (!this.bot?.entity || !this._followTarget) {
         this.stopMovement();
         return;
       }
-      try {
-        const pos = this._followTarget.position;
-        this.bot.pathfinder.setGoal(new goals.GoalNear(pos.x, pos.y, pos.z, 2));
-      } catch {}
+      this.pathfindTo(this._followTarget.position, 2);
     }, 2000);
+
+    this.pathfindTo(this._followTarget.position, 2);
   }
 
   startAttack(entity) {
     this.stopMovement();
     this._killTarget = entity;
-    this._lastAttack = 0;
 
     this._killInterval = setInterval(() => {
       if (!this.bot?.entity || !this._killTarget) {
         this.stopCombat();
         return;
       }
-      try {
-        this.attackTarget(this._killTarget);
-      } catch {}
+      this.attackTarget(this._killTarget);
     }, 1000);
+
+    this.attackTarget(entity);
+  }
+
+  pathfindTo(pos, range) {
+    try {
+      const moves = new Movements(this.bot);
+      moves.allowParkour = true;
+      moves.allow1by1towers = true;
+      this.bot.pathfinder.setMovements(moves);
+      this.bot.pathfinder.setGoal(new goals.GoalNear(pos.x, pos.y, pos.z, range));
+    } catch {}
   }
 
   async attackTarget(target) {
     const dist = this.bot.entity.position.distanceTo(target.position);
     if (dist > 4) {
-      const pos = target.position;
-      this.bot.pathfinder.setMovements(new Movements(this.bot));
-      this.bot.pathfinder.setGoal(new goals.GoalNear(pos.x, pos.y, pos.z, 2));
+      this.pathfindTo(target.position, 2);
     } else {
       this.bot.pathfinder.stop();
       await this.equipBestWeapon();
