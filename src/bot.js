@@ -29,6 +29,7 @@ export class BotManager {
     this._memoryLog = null;
     this._playerPositions = {};
     this._msgCooldowns = {};
+    this._pendingFollow = null;
 
     process.on('botCmd', ({ type, data }) => this.handleCmd(type, data));
   }
@@ -113,6 +114,14 @@ export class BotManager {
       delete this._playerPositions[player.username];
     });
 
+    this.bot.on('entitySpawn', (entity) => {
+      if (entity.type === 'player' && entity.username) {
+        const pos = entity.position;
+        this._playerPositions[entity.username] = { x: pos.x, y: pos.y, z: pos.z };
+        this.checkPendingFollow(entity.username, entity);
+      }
+    });
+
     this.bot.on('entityMoved', (entity) => {
       if (entity.type === 'player' && entity.username) {
         this._playerPositions[entity.username] = { x: entity.position.x, y: entity.position.y, z: entity.position.z };
@@ -146,39 +155,31 @@ export class BotManager {
 
   handleCmd(type, data) {
     switch (type) {
-      case 'follow': {
-        if (this.antiIdle) this.antiIdle.stop();
-        const target = this.resolvePlayer(data.name, data.sender);
-        if (!target) {
-          if (!this.cooldownMsg(data.name)) this.bot?.chat(`Don't know where ${data.name} is`);
-          return;
-        }
-        this.bot?.chat(`Following ${data.name}`);
-        if (target.entity) this.startFollow(target.entity);
-        else this.startFollowPos(target.pos);
-        break;
-      }
+      case 'follow':
       case 'come': {
         if (this.antiIdle) this.antiIdle.stop();
-        const target = this.resolvePlayer(data.name, data.sender);
-        if (!target) {
-          if (!this.cooldownMsg(data.name)) this.bot?.chat(`Don't know where ${data.name} is`);
-          return;
+        const target = this.resolvePlayer(data.name);
+        if (target?.entity) {
+          this.bot?.chat(`Following ${data.name}!`);
+          this.startFollow(target.entity);
+        } else if (target?.pos) {
+          this.bot?.chat(`Following ${data.name} (from last known position)`);
+          this.startFollowPos(target.pos, data.name);
+        } else if (this.bot?.players[data.name]) {
+          this.bot?.chat(`Waiting to see ${data.name}...`);
+          this.setPendingFollow(data.name);
         }
-        this.bot?.chat(`Coming to ${data.name}!`);
-        if (target.entity) this.startFollow(target.entity);
-        else this.startFollowPos(target.pos);
         break;
       }
       case 'kill': {
         if (this.antiIdle) this.antiIdle.stop();
-        const target = this.resolvePlayer(data.name, data.sender);
-        if (!target || !target.entity) {
+        const target = this.resolvePlayer(data.name);
+        if (target?.entity) {
+          this.bot?.chat(`Going after ${data.name}!`);
+          this.startAttack(target.entity);
+        } else {
           if (!this.cooldownMsg(data.name)) this.bot?.chat(`Can't see ${data.name}, they're too far`);
-          return;
         }
-        this.bot?.chat(`Going after ${data.name}!`);
-        this.startAttack(target.entity);
         break;
       }
       case 'mobs':
@@ -188,27 +189,39 @@ export class BotManager {
       case 'stop':
         this.stopCombat();
         this.stopMovement();
+        this._pendingFollow = null;
         if (this.antiIdle) this.antiIdle.start();
         break;
     }
   }
 
-  resolvePlayer(name, sender) {
+  resolvePlayer(name) {
     const player = this.bot?.players[name];
     if (player?.entity) {
-      this._playerPositions[name] = {
-        x: player.entity.position.x,
-        y: player.entity.position.y,
-        z: player.entity.position.z,
-        time: Date.now(),
-      };
+      const pos = player.entity.position;
+      this._playerPositions[name] = { x: pos.x, y: pos.y, z: pos.z };
       return { entity: player.entity };
     }
+    if (this._playerPositions[name]) {
+      return { entity: null, pos: this._playerPositions[name] };
+    }
     if (player) {
-      const cached = this._playerPositions[name];
-      if (cached) return { entity: null, pos: cached };
+      return {};
     }
     return null;
+  }
+
+  setPendingFollow(name) {
+    this._pendingFollow = name;
+    this.bot?.chat(`I'll follow ${name} when I see them`);
+  }
+
+  checkPendingFollow(name, entity) {
+    if (this._pendingFollow === name && entity) {
+      this._pendingFollow = null;
+      this.bot?.chat(`Found ${name}, following now!`);
+      this.startFollow(entity);
+    }
   }
 
   cooldownMsg(key) {
@@ -233,9 +246,12 @@ export class BotManager {
     this.pathfindTo(this._followTarget.position, 2);
   }
 
-  startFollowPos(pos) {
+  startFollowPos(pos, name) {
     this.stopCombat();
     this.pathfindTo(pos, 2);
+    if (name) {
+      this._pendingFollow = name;
+    }
   }
 
   startAttack(entity) {
