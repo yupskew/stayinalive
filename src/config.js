@@ -25,5 +25,5 @@ export default {
   version: env('VERSION', 'auto') === 'auto' ? false : env('VERSION', false),
   auth: env('AUTH', 'offline'),
   discordWebhook: env('DISCORD_WEBHOOK_URL', ''),
-  geminiKey: env('GEMINI_API_KEY', ''),
+  groqKey: env('GROQ_API_KEY', ''),
 };

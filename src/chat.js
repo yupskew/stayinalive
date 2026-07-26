@@ -1,5 +1,5 @@
 import { log, chat as chatLog } from './logger.js';
-import { askGemini } from './ai.js';
+import { askGroq } from './ai.js';
 import cfg from './config.js';
 
 export function setupChat(bot) {
@@ -90,9 +90,9 @@ function emitCommand(type, data) {
 }
 
 async function handleAIReply(bot, username, message) {
-  if (!cfg.geminiKey) return;
+  if (!cfg.groqKey) return;
 
-  const reply = await askGemini(username, message);
+  const reply = await askGroq(username, message);
   if (reply) {
     setTimeout(() => {
       bot.chat(reply);
