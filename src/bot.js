@@ -1,5 +1,6 @@
 import { createBot } from 'mineflayer';
-import { pathfinder, Movements, goals } from 'mineflayer-pathfinder';
+import pkg from 'mineflayer-pathfinder';
+const { pathfinder, Movements, goals } = pkg;
 import cfg from './config.js';
 import { log } from './logger.js';
 import { ReconnectManager } from './reconnect.js';
