@@ -1,5 +1,5 @@
 import { createBot } from 'mineflayer';
-import { pathfinder, Movements } from 'mineflayer-pathfinder';
+import { pathfinder, Movements, goals } from 'mineflayer-pathfinder';
 import cfg from './config.js';
 import { log } from './logger.js';
 import { ReconnectManager } from './reconnect.js';
@@ -160,6 +160,9 @@ export class BotManager {
     this.stopCombat();
     this._followTarget = entity;
 
+    const move = new Movements(this.bot);
+    this.bot.pathfinder.setMovements(move);
+
     this._followInterval = setInterval(() => {
       if (!this.bot?.entity || !this._followTarget) {
         this.stopMovement();
@@ -167,8 +170,7 @@ export class BotManager {
       }
       try {
         const pos = this._followTarget.position;
-        this.bot.pathfinder.setMovements(new Movements(this.bot));
-        this.bot.pathfinder.goto(pos);
+        this.bot.pathfinder.setGoal(new goals.GoalNear(pos.x, pos.y, pos.z, 2));
       } catch {}
     }, 2000);
   }
@@ -176,39 +178,43 @@ export class BotManager {
   startAttack(entity) {
     this.stopMovement();
     this._killTarget = entity;
+    this._lastAttack = 0;
 
-    this._killInterval = setInterval(async () => {
+    this._killInterval = setInterval(() => {
       if (!this.bot?.entity || !this._killTarget) {
         this.stopCombat();
         return;
       }
       try {
-        await this.equipBestWeapon();
-        const pos = this._killTarget.position;
-        this.bot.pathfinder.setMovements(new Movements(this.bot));
-        await this.bot.pathfinder.goto(pos);
-        this.bot.attack(this._killTarget.entity);
+        this.attackTarget(this._killTarget);
       } catch {}
-    }, 1500);
+    }, 1000);
+  }
+
+  async attackTarget(target) {
+    const dist = this.bot.entity.position.distanceTo(target.position);
+    if (dist > 4) {
+      const pos = target.position;
+      this.bot.pathfinder.setMovements(new Movements(this.bot));
+      this.bot.pathfinder.setGoal(new goals.GoalNear(pos.x, pos.y, pos.z, 2));
+    } else {
+      this.bot.pathfinder.stop();
+      await this.equipBestWeapon();
+      this.bot.attack(target);
+    }
   }
 
   startMobKilling() {
     this.stopMovement();
 
-    this._killInterval = setInterval(async () => {
+    this._killInterval = setInterval(() => {
       if (!this.bot?.entity) return;
       const mob = this.findNearestMob(8);
       if (mob) {
         this._killTarget = mob;
-        try {
-          await this.equipBestWeapon();
-          const pos = this._killTarget.position;
-          this.bot.pathfinder.setMovements(new Movements(this.bot));
-          await this.bot.pathfinder.goto(pos);
-          this.bot.attack(mob);
-        } catch {}
+        this.attackTarget(mob);
       }
-    }, 2000);
+    }, 1500);
   }
 
   findNearestMob(range) {
