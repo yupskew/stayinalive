@@ -18,6 +18,10 @@ const random = (min, max) => Math.random() * (max - min) + min;
 const randInt = (min, max) => Math.floor(random(min, max + 1));
 const chance = (pct) => Math.random() < pct;
 const pick = (arr) => arr[randInt(0, arr.length - 1)];
+const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
+
+const PROACTIVE_RECONNECT_MIN = 2 * 60 * 60 * 1000;
+const PROACTIVE_RECONNECT_MAX = 4 * 60 * 60 * 1000;
 
 export class BotManager {
   constructor() {
@@ -36,6 +40,12 @@ export class BotManager {
     this._pendingFollow = null;
     this._lastPing = 0;
     this._combatTiredness = 0;
+    this._proactiveTimer = null;
+    this._watchdogTimer = null;
+    this._frozenCheckTimer = null;
+    this._lastPosition = null;
+    this._lastPositionTime = 0;
+    this._tickEndInterval = null;
 
     process.on('botCmd', ({ type, data }) => this.handleCmd(type, data));
   }
@@ -49,6 +59,7 @@ export class BotManager {
       this.bot.removeAllListeners();
       this.stopMovement();
       this.clearIntervals();
+      this.clearTimers();
       try { this.bot.end(); } catch {}
       this.bot = null;
     }
@@ -78,16 +89,31 @@ export class BotManager {
 
     this.bot.on('login', () => {
       this.startTime = Date.now();
+      this._lastPosition = null;
       this.reconnector.reset();
       log('success', `Logged in as ${this.bot.username} | Server: ${this.bot.game.serverBrand || this.bot.game.server || 'unknown'}`);
       sendWebhook(`Bot **${this.bot.username}** connected to **${cfg.host}**`);
+
+      this.scheduleProactiveReconnect();
+      this.startFrozenCheck();
+      this.startTickEnd();
     });
 
     this.bot.on('spawn', () => {
-      log('success', `Spawned at ${Math.round(this.bot.entity.position.x)}, ${Math.round(this.bot.entity.position.y)}, ${Math.round(this.bot.entity.position.z)}`);
+      const pos = this.bot.entity.position;
+      this._lastPosition = { x: pos.x, y: pos.y, z: pos.z };
+      this._lastPositionTime = Date.now();
+      log('success', `Spawned at ${Math.round(pos.x)}, ${Math.round(pos.y)}, ${Math.round(pos.z)}`);
+      if (this.antiIdle) this.antiIdle.stop();
       this.antiIdle = new AntiIdle(this.bot);
       this.antiIdle.start();
       setupChat(this.bot);
+
+      if (chance(0.6)) {
+        setTimeout(() => {
+          this.bot?.chat(pick(['/register Bot@12345 Bot@12345', '/login Bot@12345', '']));
+        }, random(3000, 8000));
+      }
     });
 
     this.bot.on('health', () => {
@@ -113,6 +139,7 @@ export class BotManager {
 
     this.bot.on('respawn', () => {
       log('success', 'Respawned');
+      this._lastPosition = null;
       if (this.antiIdle) this.antiIdle.start();
     });
 
@@ -155,6 +182,7 @@ export class BotManager {
       sendWebhook(`Bot **${cfg.username}** was kicked from **${cfg.host}**: ${clean}`);
       this.stopCombat();
       this.clearIntervals();
+      this.clearTimers();
       this.scheduleReconnect();
     });
 
@@ -167,11 +195,116 @@ export class BotManager {
       this.stopCombat();
       if (this.antiIdle) this.antiIdle.stop();
       this.clearIntervals();
+      this.clearTimers();
       if (this.startTime) {
         sendWebhook(`Bot **${cfg.username}** disconnected from **${cfg.host}** after ${formatDuration(Date.now() - this.startTime)}`);
       }
       this.scheduleReconnect();
     });
+
+    this.bot.on('chat', (username, message) => {
+      if (username === this.bot?.username) return;
+      if (this.antiIdle) {
+        this.antiIdle.handleChat(username, message);
+      }
+      this.handleAuthChat(username, message);
+      this.handleTpaChat(username, message);
+    });
+
+    this.bot.on('whisper', (username, message) => {
+      if (username === this.bot?.username) return;
+      if (message.toLowerCase().includes('register') || message.toLowerCase().includes('login')) {
+        this.handleAuthWhisper(username, message);
+      }
+    });
+  }
+
+  handleAuthChat(username, message) {
+    const lower = message.toLowerCase();
+    if (lower.includes('register') || lower.includes('/register')) {
+      if (chance(0.3)) {
+        setTimeout(() => this.bot?.chat('/register Bot@12345 Bot@12345'), random(2000, 5000));
+      }
+    }
+    if (lower.includes('/login') || (lower.includes('login') && !lower.includes('logged'))) {
+      if (chance(0.5)) {
+        setTimeout(() => this.bot?.chat('/login Bot@12345'), random(1000, 4000));
+      }
+    }
+  }
+
+  handleAuthWhisper(username, message) {
+    const lower = message.toLowerCase();
+    if (lower.includes('register')) {
+      setTimeout(() => this.bot?.chat(`/register Bot@12345 Bot@12345`), random(2000, 5000));
+    } else if (lower.includes('login')) {
+      setTimeout(() => this.bot?.chat(`/login Bot@12345`), random(1000, 4000));
+    }
+  }
+
+  handleTpaChat(username, message) {
+    const lower = message.toLowerCase();
+    if (lower.includes('teleport') || lower.includes('tpa') || lower.includes('tpahere')) {
+      if (lower.includes(this.bot?.username?.toLowerCase() || '')) {
+        setTimeout(() => {
+          this.bot?.chat(`/tpaccept`);
+          log('action', `Accepted teleport from ${username}`);
+        }, random(1000, 3000));
+      }
+    }
+    if (lower.includes('accept') && lower.includes('teleport') && lower.includes(this.bot?.username?.toLowerCase() || '')) {
+      setTimeout(() => this.bot?.chat(`/tpaccept`), random(1000, 3000));
+    }
+  }
+
+  startTickEnd() {
+    this._tickEndInterval = setInterval(() => {
+      if (this.bot?._client) {
+        try { this.bot._client.write('tick_end', {}); } catch {}
+      }
+    }, 50);
+  }
+
+  startFrozenCheck() {
+    this._frozenCheckTimer = setInterval(() => {
+      if (!this.bot?.entity) return;
+      const now = Date.now();
+      const pos = this.bot.entity.position;
+      const key = `${Math.round(pos.x)},${Math.round(pos.y)},${Math.round(pos.z)}`;
+
+      if (key === this._lastPosition?.key) {
+        if (now - this._lastPositionTime > 60000) {
+          log('warn', 'Frozen connection detected, forcing reconnect');
+          sendWebhook(`Bot **${cfg.username}** frozen, reconnecting`);
+          if (this.bot) {
+            try { this.bot.end('frozen'); } catch {}
+          }
+          this._lastPosition = null;
+          return;
+        }
+      } else {
+        this._lastPosition = { key, time: now };
+        this._lastPositionTime = now;
+      }
+
+      if (this.bot?.player?.ping !== undefined) {
+        this._lastPing = this.bot.player.ping;
+      }
+    }, 15000);
+  }
+
+  scheduleProactiveReconnect() {
+    if (this._proactiveTimer) clearTimeout(this._proactiveTimer);
+    const delay = random(PROACTIVE_RECONNECT_MIN, PROACTIVE_RECONNECT_MAX);
+    const hours = (delay / 3600000).toFixed(1);
+    log('system', `Scheduled proactive reconnect in ${hours}h`);
+    this._proactiveTimer = setTimeout(() => {
+      if (!this.bot) return;
+      log('system', 'Proactive reconnect - simulating player break');
+      sendWebhook(`Bot **${cfg.username}** doing proactive reconnect`);
+      this.disconnect();
+      setTimeout(() => this.connect(), random(5000, 15000));
+    }, delay);
   }
 
   handleCmd(type, data) {
@@ -240,7 +373,6 @@ export class BotManager {
   startFollow(entity) {
     this.stopCombat();
     this._followTarget = entity;
-
     const interval = random(1800, 4000);
     this._followInterval = setInterval(() => {
       if (!this.bot?.entity || !this._followTarget) {
@@ -254,23 +386,19 @@ export class BotManager {
       const range = random(1.8, 4);
       this.pathfindTo(this._followTarget.position, range);
     }, interval);
-
     this.pathfindTo(this._followTarget.position, random(1.8, 4));
   }
 
   startFollowPos(pos, name) {
     this.stopCombat();
     this.pathfindTo(pos, random(1.8, 4));
-    if (name) {
-      this._pendingFollow = name;
-    }
+    if (name) this._pendingFollow = name;
   }
 
   startAttack(entity) {
     this.stopMovement();
     this._killTarget = entity;
     this._combatTiredness = 0;
-
     const interval = random(800, 1800);
     this._killInterval = setInterval(() => {
       if (!this.bot?.entity || !this._killTarget || this._combatTiredness > 5) {
@@ -280,7 +408,6 @@ export class BotManager {
       this._combatTiredness += chance(0.15) ? 1 : 0;
       this.attackTarget(this._killTarget);
     }, interval);
-
     setTimeout(() => this.attackTarget(entity), random(300, 1200));
   }
 
@@ -301,12 +428,10 @@ export class BotManager {
   async attackTarget(target) {
     if (!this.bot?.entity || !target) return;
     const dist = this.bot.entity.position.distanceTo(target.position);
-
     if (dist > 6 && this._followTarget) {
       this.pathfindTo(target.position, random(1.5, 3));
       return;
     }
-
     if (dist > 4) {
       this.pathfindTo(target.position, random(1.5, 3));
     } else {
@@ -332,7 +457,6 @@ export class BotManager {
   startMobKilling() {
     this.stopMovement();
     this._combatTiredness = 0;
-
     const interval = random(1200, 3000);
     this._killInterval = setInterval(() => {
       if (!this.bot?.entity || this._combatTiredness > 8) {
@@ -384,28 +508,10 @@ export class BotManager {
     this.stopMovement();
   }
 
-  startWatchdog() {
-    this.clearIntervals();
-
-    this._watchdog = setInterval(() => {
-      if (this.bot?.entity) {
-        const now = Date.now();
-        if (now - this._lastPing > random(25000, 60000)) {
-          this._lastPing = now;
-        }
-      }
-    }, random(15000, 45000));
-
-    this._memoryLog = setInterval(() => {
-      const usage = process.memoryUsage();
-      const rss = (usage.rss / 1024 / 1024).toFixed(1);
-      const heap = (usage.heapUsed / 1024 / 1024).toFixed(1);
-      log('system', `Memory: ${rss}MB RSS, ${heap}MB heap | Uptime: ${formatDuration(this.uptime)}`);
-
-      if (usage.heapUsed > 200 * 1024 * 1024) {
-        global.gc?.();
-      }
-    }, 600000);
+  clearTimers() {
+    if (this._proactiveTimer) { clearTimeout(this._proactiveTimer); this._proactiveTimer = null; }
+    if (this._frozenCheckTimer) { clearInterval(this._frozenCheckTimer); this._frozenCheckTimer = null; }
+    if (this._tickEndInterval) { clearInterval(this._tickEndInterval); this._tickEndInterval = null; }
   }
 
   clearIntervals() {
@@ -427,6 +533,7 @@ export class BotManager {
     this.stopCombat();
     if (this.antiIdle) this.antiIdle.stop();
     this.clearIntervals();
+    this.clearTimers();
     if (this.bot) {
       try { this.bot.end(); } catch {}
       this.bot = null;
