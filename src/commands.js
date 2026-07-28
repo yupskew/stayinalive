@@ -37,10 +37,10 @@ export function setupCommands(botManager) {
           break;
 
         case 'say':
-          if (args.length && botManager.bot) {
+          if (args.length) {
             const delay = args.join(' ').length * random(30, 80);
             setTimeout(() => {
-              botManager.bot.chat(args.join(' '));
+              botManager.bot?.chat?.(args.join(' '));
             }, delay);
           }
           break;
