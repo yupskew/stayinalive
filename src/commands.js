@@ -1,6 +1,10 @@
 import { createInterface } from 'node:readline';
 import { log } from './logger.js';
 
+const random = (min, max) => Math.random() * (max - min) + min;
+const randInt = (min, max) => Math.floor(random(min, max + 1));
+const chance = (pct) => Math.random() < pct;
+
 export function setupCommands(botManager) {
   const rl = createInterface({
     input: process.stdin,
@@ -8,16 +12,23 @@ export function setupCommands(botManager) {
     prompt: '',
   });
 
+  let cmdCooldown = 0;
+
   rl.on('line', async (line) => {
+    const now = Date.now();
+    if (now < cmdCooldown) return;
+
     const parts = line.trim().split(/\s+/);
     const cmd = parts[0]?.toLowerCase();
     const args = parts.slice(1);
+
+    cmdCooldown = now + random(100, 500);
 
     try {
       switch (cmd) {
         case 'reconnect':
           log('info', 'Manual reconnect triggered');
-          botManager.reconnect();
+          setTimeout(() => botManager.reconnect(), random(500, 1500));
           break;
 
         case 'disconnect':
@@ -27,28 +38,34 @@ export function setupCommands(botManager) {
 
         case 'say':
           if (args.length && botManager.bot) {
-            botManager.bot.chat(args.join(' '));
-            log('success', `Bot said: ${args.join(' ')}`);
+            const delay = args.join(' ').length * random(30, 80);
+            setTimeout(() => {
+              botManager.bot.chat(args.join(' '));
+            }, delay);
           }
           break;
 
         case 'jump':
           if (botManager.bot?.entity) {
-            botManager.bot.setControlState('jump', true);
-            setTimeout(() => botManager.bot.setControlState('jump', false), 200);
-            log('action', 'Manual jump');
+            setTimeout(() => {
+              const duration = randInt(100, 250);
+              botManager.bot.setControlState('jump', true);
+              setTimeout(() => botManager.bot.setControlState('jump', false), duration);
+            }, random(100, 400));
           }
           break;
 
         case 'follow':
           if (botManager.bot && args[0]) {
-            const target = botManager.bot.players[args[0]];
-            if (target?.entity) {
-              botManager.startFollow(target.entity);
-              log('action', `Now following ${args[0]}`);
-            } else {
-              log('warn', `Player "${args[0]}" not found or not in range`);
-            }
+            setTimeout(() => {
+              const target = botManager.bot.players[args[0]];
+              if (target?.entity) {
+                botManager.startFollow(target.entity);
+                log('action', `Now following ${args[0]}`);
+              } else {
+                log('warn', `Player "${args[0]}" not found or not in range`);
+              }
+            }, random(300, 1500));
           }
           break;
 

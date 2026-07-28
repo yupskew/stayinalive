@@ -1,9 +1,73 @@
 import { log, chat as chatLog } from './logger.js';
-import { askGroq } from './ai.js';
-import cfg from './config.js';
 
-let lastAiCall = 0;
-let aiCooldown = false;
+const random = (min, max) => Math.random() * (max - min) + min;
+const randInt = (min, max) => Math.floor(random(min, max + 1));
+const pick = (arr) => arr[randInt(0, arr.length - 1)];
+const chance = (pct) => Math.random() < pct;
+
+const COMMANDS = ['follow', 'kill', 'come', 'comehere', 'stop', 'stay', 'mobs'];
+const HELP_MSG = 'commands: !follow <name> !kill <name> !come !stop !mobs';
+
+function silently(cb) {
+  setTimeout(cb, random(600, 3000));
+}
+
+function lookAtPlayer(bot, username) {
+  if (!bot?.entity) return;
+  const player = bot.players[username];
+  if (!player?.entity) return;
+  const pos = player.entity.position;
+  const dx = pos.x - bot.entity.position.x;
+  const dz = pos.z - bot.entity.position.z;
+  const dy = pos.y - bot.entity.position.y;
+  const dist = Math.sqrt(dx * dx + dz * dz);
+  const yaw = Math.atan2(-dx, -dz);
+  const pitch = -Math.atan2(dy, dist);
+  const steps = randInt(3, 7);
+  smoothLookRaw(bot, yaw, pitch, steps);
+}
+
+function smoothLookRaw(bot, targetYaw, targetPitch, steps) {
+  if (!bot?.entity) return;
+  const startYaw = bot.entity.yaw;
+  const startPitch = bot.entity.pitch;
+  let diffYaw = targetYaw - startYaw;
+  while (diffYaw > Math.PI) diffYaw -= 2 * Math.PI;
+  while (diffYaw < -Math.PI) diffYaw += 2 * Math.PI;
+  const diffPitch = targetPitch - startPitch;
+  let i = 1;
+  const tick = () => {
+    if (!bot?.entity) return;
+    const t = i / steps;
+    const eased = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+    const yaw = startYaw + diffYaw * eased + random(-0.02, 0.02);
+    const pitch = startPitch + diffPitch * eased + random(-0.01, 0.01);
+    bot.look(yaw, clamp(pitch, -Math.PI / 2, Math.PI / 2), false);
+    i++;
+    if (i <= steps) setTimeout(tick, random(30, 80));
+  };
+  tick();
+}
+
+function nod(bot) {
+  if (!bot?.entity) return;
+  const pitch = bot.entity.pitch;
+  bot.look(bot.entity.yaw, pitch + random(0.3, 0.6), false);
+  setTimeout(() => {
+    if (bot?.entity) bot.look(bot.entity.yaw, pitch, false);
+  }, random(200, 500));
+}
+
+function parseCmd(message) {
+  const lower = message.toLowerCase().trim();
+  if (!lower.startsWith('!')) return null;
+  const parts = lower.slice(1).split(/\s+/);
+  return { cmd: parts[0], target: parts.slice(1).join(' ') };
+}
+
+function whisper(bot, username, msg) {
+  bot.chat(`/tell ${username} ${msg}`);
+}
 
 export function setupChat(bot) {
   if (!bot) return;
@@ -12,126 +76,63 @@ export function setupChat(bot) {
     if (username === bot.username) return;
     chatLog(username, message);
 
-    const lower = message.toLowerCase().trim();
+    const parsed = parseCmd(message);
+    if (!parsed) return;
+    const { cmd, target } = parsed;
 
-    if (lower.startsWith('!')) {
-      handleCommand(bot, username, lower.slice(1));
-      return;
+    if (chance(0.03)) return;
+
+    if (COMMANDS.includes(cmd)) {
+      silently(() => {
+        switch (cmd) {
+          case 'follow':
+            if (!target) return;
+            break;
+          case 'kill':
+            if (!target) return;
+            break;
+        }
+        emitCommand(cmd === 'comehere' ? 'come' : cmd === 'stay' ? 'stop' : cmd, { name: target || username });
+      });
+    } else if (cmd === 'help') {
+      silently(() => whisper(bot, username, HELP_MSG));
     }
-
-    if (!cfg.groqKey) return;
-
-    const now = Date.now();
-    if (aiCooldown || now - lastAiCall < 3000) return;
-
-    const mentioned = lower.includes(bot.username.toLowerCase());
-    const prob = mentioned ? 0.9 : 0.15;
-    if (Math.random() > prob) return;
-
-    aiCooldown = true;
-    lastAiCall = now;
-
-    handleAIReply(bot, username, message);
   });
-}
 
-function handleCommand(bot, username, args) {
-  const parts = args.split(/\s+/);
-  const cmd = parts[0];
-  const target = parts.slice(1).join(' ');
+  bot.on('whisper', (username, message) => {
+    if (username === bot.username) return;
+    chatLog(username, `[whisper] ${message}`);
 
-  switch (cmd) {
-    case 'follow':
-      if (!target) { bot.chat('Who?'); return; }
-      emitCommand('follow', { name: target });
-      break;
-    case 'kill':
-      if (!target) { bot.chat('Kill who?'); return; }
-      emitCommand('kill', { name: target });
-      break;
-    case 'come':
-    case 'comehere':
-      emitCommand('come', { name: target || username });
-      break;
-    case 'stop':
-    case 'stay':
-      emitCommand('stop');
-      break;
-    case 'mobs':
-      emitCommand('mobs');
-      break;
-  }
+    const parsed = parseCmd(message);
+    if (!parsed) return;
+    const { cmd, target } = parsed;
+
+    if (chance(0.02)) return;
+
+    if (COMMANDS.includes(cmd)) {
+      silently(() => {
+        switch (cmd) {
+          case 'follow':
+            if (!target) { whisper(bot, username, 'who?'); return; }
+            break;
+          case 'kill':
+            if (!target) { whisper(bot, username, 'kill who?'); return; }
+            break;
+        }
+        whisper(bot, username, pick(['got it', 'aight', 'on it', 'say less', 'kk', 'yeah']));
+        lookAtPlayer(bot, username);
+        emitCommand(cmd === 'comehere' ? 'come' : cmd === 'stay' ? 'stop' : cmd, { name: target || username });
+      });
+    } else if (cmd === 'help') {
+      silently(() => whisper(bot, username, HELP_MSG));
+    }
+  });
 }
 
 function emitCommand(type, data) {
   process.emit('botCmd', { type, data });
 }
 
-async function handleAIReply(bot, username, message) {
-  const ctx = buildContext(bot);
-  const reply = await askGroq(username, message, ctx);
-  aiCooldown = false;
-
-  if (!reply) return;
-
-  const action = reply.match(/\[action:(\w+)(?:\s+(.+?))?\]/);
-  let chatMsg = reply.replace(/\[action:.*?\]/g, '').trim();
-
-  if (action) {
-    const cmd = action[1];
-    const arg = action[2]?.trim();
-
-    switch (cmd) {
-      case 'follow':
-        emitCommand('follow', { name: arg || username });
-        if (!chatMsg) chatMsg = `Following ${arg || username}!`;
-        break;
-      case 'come':
-        emitCommand('come', { name: arg || username });
-        if (!chatMsg) chatMsg = 'Coming!';
-        break;
-      case 'stop':
-        emitCommand('stop');
-        if (!chatMsg) chatMsg = 'Okay';
-        break;
-      case 'mobs':
-        emitCommand('mobs');
-        if (!chatMsg) chatMsg = 'Time to fight!';
-        break;
-      case 'jump':
-        if (bot.entity) {
-          bot.setControlState('jump', true);
-          setTimeout(() => bot.setControlState('jump', false), 200);
-        }
-        break;
-      case 'look':
-        if (arg) {
-          const target = bot.players[arg];
-          if (target?.entity) {
-            bot.lookAt(target.entity.position.offset(0, 1, 0));
-          }
-        }
-        break;
-    }
-  }
-
-  if (chatMsg) {
-    const delay = 1000 + Math.random() * 3000;
-    setTimeout(() => bot.chat(chatMsg), delay);
-  }
-}
-
-function buildContext(bot) {
-  if (!bot?.entity) return {};
-  const e = bot.entity;
-  const nearby = Object.values(bot.players)
-    .filter(p => p.entity && p.username !== bot.username)
-    .map(p => p.username);
-  return {
-    health: Math.round(bot.health),
-    food: Math.round(bot.food),
-    pos: `${Math.round(e.position.x)}, ${Math.round(e.position.y)}, ${Math.round(e.position.z)}`,
-    nearby: nearby.length ? nearby.join(', ') : 'none',
-    allPlayers: Object.keys(bot.players).filter(n => n !== bot.username).join(', ') || 'none',
-  };
+function clamp(val, min, max) {
+  return Math.max(min, Math.min(max, val));
 }

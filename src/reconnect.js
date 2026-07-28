@@ -1,18 +1,20 @@
 import { log } from './logger.js';
 
+const random = (min, max) => Math.random() * (max - min) + min;
+
 export class ReconnectManager {
   constructor(options = {}) {
-    this.baseDelay = options.baseDelay || 5000;
-    this.maxDelay = options.maxDelay || 120000;
+    this.baseDelay = options.baseDelay || 8000;
+    this.maxDelay = options.maxDelay || 180000;
     this.attempt = 0;
     this.timer = null;
     this.onReconnect = null;
   }
 
   getDelay() {
-    const delay = Math.min(this.baseDelay * Math.pow(2, this.attempt), this.maxDelay);
-    const jitter = Math.random() * 1000;
-    return Math.round(delay + jitter);
+    const delay = Math.min(this.baseDelay * Math.pow(1.8, this.attempt), this.maxDelay);
+    const jitter = random(-delay * 0.15, delay * 0.25);
+    return Math.round(Math.max(2000, delay + jitter));
   }
 
   schedule() {

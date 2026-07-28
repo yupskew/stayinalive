@@ -14,6 +14,11 @@ const HOSTILE_MOBS = [
   'evoker', 'vindicator', 'pillager', 'ravager', 'vex', 'warden',
 ];
 
+const random = (min, max) => Math.random() * (max - min) + min;
+const randInt = (min, max) => Math.floor(random(min, max + 1));
+const chance = (pct) => Math.random() < pct;
+const pick = (arr) => arr[randInt(0, arr.length - 1)];
+
 export class BotManager {
   constructor() {
     this.bot = null;
@@ -26,10 +31,11 @@ export class BotManager {
     this._killTarget = null;
     this._killInterval = null;
     this._watchdog = null;
-    this._memoryLog = null;
     this._playerPositions = {};
     this._msgCooldowns = {};
     this._pendingFollow = null;
+    this._lastPing = 0;
+    this._combatTiredness = 0;
 
     process.on('botCmd', ({ type, data }) => this.handleCmd(type, data));
   }
@@ -56,7 +62,7 @@ export class BotManager {
       viewDistance: 'far',
       hideErrors: true,
       logErrors: false,
-      checkTimeoutInterval: 60000,
+      checkTimeoutInterval: randInt(45000, 90000),
     };
 
     if (cfg.auth === 'microsoft') {
@@ -74,7 +80,6 @@ export class BotManager {
       this.startTime = Date.now();
       this.reconnector.reset();
       log('success', `Logged in as ${this.bot.username} | Server: ${this.bot.game.serverBrand || this.bot.game.server || 'unknown'}`);
-      this.startWatchdog();
       sendWebhook(`Bot **${this.bot.username}** connected to **${cfg.host}**`);
     });
 
@@ -86,11 +91,17 @@ export class BotManager {
     });
 
     this.bot.on('health', () => {
-      if (this.bot.food < 18 || this.bot.health < 20) {
+      const threshold = random(12, 19);
+      const healthThreshold = random(10, 18);
+      if (this.bot.food < threshold || this.bot.health < healthThreshold) {
         this.autoEat();
       }
       if (this.bot.health <= 0) {
         log('warn', 'Bot died');
+      }
+      if (this.bot.health < 8 && this._killTarget) {
+        this.stopCombat();
+        this.autoEat();
       }
     });
 
@@ -128,6 +139,16 @@ export class BotManager {
       }
     });
 
+    this.bot.on('entityHurt', (entity) => {
+      if (entity === this.bot?.entity) {
+        if (this.antiIdle) this.antiIdle.stop();
+        const nearbyMob = this.findNearestMob(6);
+        if (nearbyMob && chance(0.7)) {
+          setTimeout(() => this.startMobKilling(), random(500, 2000));
+        }
+      }
+    });
+
     this.bot.on('kicked', (reason) => {
       const clean = typeof reason === 'string' ? reason : JSON.stringify(reason);
       log('error', `Kicked: ${clean}`);
@@ -160,13 +181,10 @@ export class BotManager {
         if (this.antiIdle) this.antiIdle.stop();
         const target = this.resolvePlayer(data.name);
         if (target?.entity) {
-          this.bot?.chat(`Following ${data.name}!`);
-          this.startFollow(target.entity);
+          setTimeout(() => this.startFollow(target.entity), random(400, 2000));
         } else if (target?.pos) {
-          this.bot?.chat(`Following ${data.name} (from last known position)`);
-          this.startFollowPos(target.pos, data.name);
+          setTimeout(() => this.startFollowPos(target.pos, data.name), random(300, 1500));
         } else if (this.bot?.players[data.name]) {
-          this.bot?.chat(`Waiting to see ${data.name}...`);
           this.setPendingFollow(data.name);
         }
         break;
@@ -175,16 +193,13 @@ export class BotManager {
         if (this.antiIdle) this.antiIdle.stop();
         const target = this.resolvePlayer(data.name);
         if (target?.entity) {
-          this.bot?.chat(`Going after ${data.name}!`);
-          this.startAttack(target.entity);
-        } else {
-          if (!this.cooldownMsg(data.name)) this.bot?.chat(`Can't see ${data.name}, they're too far`);
+          setTimeout(() => this.startAttack(target.entity), random(500, 2500));
         }
         break;
       }
       case 'mobs':
         if (this.antiIdle) this.antiIdle.stop();
-        this.startMobKilling();
+        setTimeout(() => this.startMobKilling(), random(800, 3000));
         break;
       case 'stop':
         this.stopCombat();
@@ -213,42 +228,39 @@ export class BotManager {
 
   setPendingFollow(name) {
     this._pendingFollow = name;
-    this.bot?.chat(`I'll follow ${name} when I see them`);
   }
 
   checkPendingFollow(name, entity) {
     if (this._pendingFollow === name && entity) {
       this._pendingFollow = null;
-      this.bot?.chat(`Found ${name}, following now!`);
-      this.startFollow(entity);
+      setTimeout(() => this.startFollow(entity), random(800, 3000));
     }
-  }
-
-  cooldownMsg(key) {
-    const now = Date.now();
-    if (this._msgCooldowns[key] && now - this._msgCooldowns[key] < 8000) return true;
-    this._msgCooldowns[key] = now;
-    return false;
   }
 
   startFollow(entity) {
     this.stopCombat();
     this._followTarget = entity;
 
+    const interval = random(1800, 4000);
     this._followInterval = setInterval(() => {
       if (!this.bot?.entity || !this._followTarget) {
         this.stopMovement();
         return;
       }
-      this.pathfindTo(this._followTarget.position, 2);
-    }, 2000);
+      if (chance(0.12)) {
+        if (this.antiIdle) this.antiIdle.doAction();
+        return;
+      }
+      const range = random(1.8, 4);
+      this.pathfindTo(this._followTarget.position, range);
+    }, interval);
 
-    this.pathfindTo(this._followTarget.position, 2);
+    this.pathfindTo(this._followTarget.position, random(1.8, 4));
   }
 
   startFollowPos(pos, name) {
     this.stopCombat();
-    this.pathfindTo(pos, 2);
+    this.pathfindTo(pos, random(1.8, 4));
     if (name) {
       this._pendingFollow = name;
     }
@@ -257,50 +269,87 @@ export class BotManager {
   startAttack(entity) {
     this.stopMovement();
     this._killTarget = entity;
+    this._combatTiredness = 0;
 
+    const interval = random(800, 1800);
     this._killInterval = setInterval(() => {
-      if (!this.bot?.entity || !this._killTarget) {
+      if (!this.bot?.entity || !this._killTarget || this._combatTiredness > 5) {
         this.stopCombat();
         return;
       }
+      this._combatTiredness += chance(0.15) ? 1 : 0;
       this.attackTarget(this._killTarget);
-    }, 1000);
+    }, interval);
 
-    this.attackTarget(entity);
+    setTimeout(() => this.attackTarget(entity), random(300, 1200));
   }
 
   pathfindTo(pos, range) {
     try {
       const moves = new Movements(this.bot);
-      moves.allowParkour = true;
-      moves.allow1by1towers = true;
+      moves.allowParkour = chance(0.6);
+      moves.allow1by1towers = chance(0.5);
+      if (chance(0.2)) {
+        moves.allowParkour = false;
+        moves.allow1by1towers = false;
+      }
       this.bot.pathfinder.setMovements(moves);
       this.bot.pathfinder.setGoal(new goals.GoalNear(pos.x, pos.y, pos.z, range));
     } catch {}
   }
 
   async attackTarget(target) {
+    if (!this.bot?.entity || !target) return;
     const dist = this.bot.entity.position.distanceTo(target.position);
+
+    if (dist > 6 && this._followTarget) {
+      this.pathfindTo(target.position, random(1.5, 3));
+      return;
+    }
+
     if (dist > 4) {
-      this.pathfindTo(target.position, 2);
+      this.pathfindTo(target.position, random(1.5, 3));
     } else {
       this.bot.pathfinder.stop();
       await this.equipBestWeapon();
+      const swingDelay = random(50, 300);
+      await this.sleep(swingDelay);
       this.bot.attack(target);
+      if (chance(0.2)) {
+        setTimeout(() => {
+          if (this.bot?.entity && target && chance(0.6)) {
+            this.bot.attack(target);
+          }
+        }, random(100, 400));
+      }
+      if (chance(0.08)) {
+        this.bot.setControlState('jump', true);
+        setTimeout(() => this.bot?.setControlState('jump', false), random(80, 150));
+      }
     }
   }
 
   startMobKilling() {
     this.stopMovement();
+    this._combatTiredness = 0;
 
+    const interval = random(1200, 3000);
     this._killInterval = setInterval(() => {
-      if (!this.bot?.entity) return;
-      const mob = this.findNearestMob(8);
+      if (!this.bot?.entity || this._combatTiredness > 8) {
+        this.stopCombat();
+        if (this.antiIdle) this.antiIdle.start();
+        return;
+      }
+      this._combatTiredness += chance(0.1) ? 1 : 0;
+      const range = random(5, 10);
+      const mob = this.findNearestMob(range);
       if (mob) {
         this._killTarget = mob;
         this.attackTarget(mob);
+      } else {
+        this._combatTiredness += 3;
       }
-    }, 1500);
+    }, interval);
   }
 
   findNearestMob(range) {
@@ -314,11 +363,12 @@ export class BotManager {
   async equipBestWeapon() {
     if (!this.bot?.inventory) return;
     try {
-      const swords = this.bot.inventory.items().filter(i =>
+      const weapons = this.bot.inventory.items().filter(i =>
         i.name.includes('sword') || i.name.includes('axe')
       );
-      if (swords.length) {
-        const best = swords.sort((a, b) => (b.attackDamage || 0) - (a.attackDamage || 0))[0];
+      if (weapons.length) {
+        const best = weapons.sort((a, b) => (b.attackDamage || 0) - (a.attackDamage || 0))[0];
+        await this.sleep(random(100, 400));
         await this.bot.equip(best, 'hand');
       }
     } catch {}
@@ -326,6 +376,7 @@ export class BotManager {
 
   stopCombat() {
     this._killTarget = null;
+    this._combatTiredness = 0;
     if (this._killInterval) {
       clearInterval(this._killInterval);
       this._killInterval = null;
@@ -338,9 +389,12 @@ export class BotManager {
 
     this._watchdog = setInterval(() => {
       if (this.bot?.entity) {
-        this.bot.player.ping;
+        const now = Date.now();
+        if (now - this._lastPing > random(25000, 60000)) {
+          this._lastPing = now;
+        }
       }
-    }, 30000);
+    }, random(15000, 45000));
 
     this._memoryLog = setInterval(() => {
       const usage = process.memoryUsage();
@@ -405,10 +459,15 @@ export class BotManager {
       const food = this.bot.inventory.items().find(i => i.foodPoints > 0);
       if (food) {
         await this.bot.equip(food, 'hand');
+        await this.sleep(random(300, 900));
         await this.bot.consume();
         log('action', 'Auto-ate food');
       }
     } catch {}
+  }
+
+  sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 }
 
